@@ -1,0 +1,27 @@
+# AiTUI Configuration
+# Define multiple [[provider]] sections to support switching between providers.
+# Press Tab in Normal mode to switch providers.
+
+[[provider]]
+name = "DeepSeek"
+api_key = "sk-your-deepseek-key"
+base_url = "https://api.deepseek.com"
+model = "deepseek-chat"
+# proxy = "http://127.0.0.1:7890"
+max_tokens = 0
+temperature = 1.0
+# system_prompt = "You are a helpful assistant."
+
+[[provider]]
+name = "Mimo"
+api_key = "sk-your-mimo-key"
+base_url = "https://api.mimo.ai"
+model = "mimo-chat"
+temperature = 0.7
+
+# [[provider]]
+# name = "OpenAI"
+# api_key = "sk-your-openai-key"
+# base_url = "https://api.openai.com"
+# model = "gpt-4o"
+# temperature = 1.0
