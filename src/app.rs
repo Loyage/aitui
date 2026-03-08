@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use chrono::Utc;
 use tokio::sync::mpsc;
 
@@ -7,6 +9,7 @@ use crate::event::Event;
 use crate::history::{
     save_conversation, ChatMessage, Conversation, Role,
 };
+use crate::keymap::Keymap;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Mode {
@@ -20,9 +23,10 @@ pub struct App {
     pub input: String,
     pub cursor_pos: usize,
     pub conversation: Conversation,
-    pub scroll_offset: usize,
+    pub selected_message: Option<usize>,
     pub streaming: bool,
     pub config: Config,
+    pub keymap: Keymap,
     pub current_provider: usize,
     pub event_tx: mpsc::UnboundedSender<Event>,
     pub should_quit: bool,
@@ -30,10 +34,14 @@ pub struct App {
     pub visual_start: Option<usize>,
     pub search_query: String,
     pub searching: bool,
+    pub show_help: bool,
+    pub help_scroll: usize,
+    pub help_searching: bool,
+    pub help_search_query: String,
 }
 
 impl App {
-    pub fn new(config: Config, event_tx: mpsc::UnboundedSender<Event>) -> Self {
+    pub fn new(config: Config, keymap: Keymap, event_tx: mpsc::UnboundedSender<Event>) -> Self {
         let conversation =
             crate::history::load_latest_conversation().unwrap_or_else(Conversation::new);
 
@@ -41,10 +49,11 @@ impl App {
             mode: Mode::Normal,
             input: String::new(),
             cursor_pos: 0,
+            selected_message: Self::last_non_system_index(&conversation.messages),
             conversation,
-            scroll_offset: 0,
             streaming: false,
             config,
+            keymap,
             current_provider: 0,
             event_tx,
             should_quit: false,
@@ -52,6 +61,10 @@ impl App {
             visual_start: None,
             search_query: String::new(),
             searching: false,
+            show_help: false,
+            help_scroll: 0,
+            help_searching: false,
+            help_search_query: String::new(),
         }
     }
 
@@ -72,7 +85,7 @@ impl App {
         // Save current before starting new
         let _ = save_conversation(&self.conversation);
         self.conversation = Conversation::new();
-        self.scroll_offset = 0;
+        self.selected_message = None;
         self.status_message = Some("New conversation started".to_string());
     }
 
@@ -102,8 +115,8 @@ impl App {
         };
         self.conversation.messages.push(ai_msg);
 
-        // Auto-scroll to bottom
-        self.scroll_offset = 0;
+        // Select latest message
+        self.selected_message = Self::last_non_system_index(&self.conversation.messages);
 
         api::send_chat_request(
             self.provider(),
@@ -123,6 +136,7 @@ impl App {
     pub fn on_api_done(&mut self) {
         self.streaming = false;
         self.conversation.updated_at = Utc::now();
+        self.selected_message = Self::last_non_system_index(&self.conversation.messages);
 
         // Auto-set title from first user message
         if self.conversation.title == "New Chat" {
@@ -155,36 +169,91 @@ impl App {
         }
     }
 
-    pub fn scroll_up(&mut self) {
-        self.scroll_offset = self.scroll_offset.saturating_add(1);
-    }
-
-    pub fn scroll_down(&mut self) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(1);
-    }
-
-    pub fn scroll_to_top(&mut self) {
-        // Will be clamped during rendering
-        self.scroll_offset = usize::MAX / 2;
-    }
-
-    pub fn scroll_to_bottom(&mut self) {
-        self.scroll_offset = 0;
-    }
-
-    pub fn copy_last_response(&mut self) {
-        if let Some(last_ai) = self
-            .conversation
-            .messages
+    /// Returns the indices of non-System messages.
+    fn non_system_indices(messages: &[ChatMessage]) -> Vec<usize> {
+        messages
             .iter()
-            .rev()
-            .find(|m| m.role == Role::Assistant)
-        {
+            .enumerate()
+            .filter(|(_, m)| m.role != Role::System)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    fn last_non_system_index(messages: &[ChatMessage]) -> Option<usize> {
+        messages
+            .iter()
+            .rposition(|m| m.role != Role::System)
+    }
+
+    pub fn select_next_message(&mut self) {
+        let indices = Self::non_system_indices(&self.conversation.messages);
+        if indices.is_empty() {
+            return;
+        }
+        match self.selected_message {
+            Some(cur) => {
+                if let Some(pos) = indices.iter().position(|&i| i == cur) {
+                    if pos + 1 < indices.len() {
+                        self.selected_message = Some(indices[pos + 1]);
+                    }
+                } else {
+                    self.selected_message = Some(*indices.last().unwrap());
+                }
+            }
+            None => {
+                self.selected_message = Some(*indices.last().unwrap());
+            }
+        }
+    }
+
+    pub fn select_prev_message(&mut self) {
+        let indices = Self::non_system_indices(&self.conversation.messages);
+        if indices.is_empty() {
+            return;
+        }
+        match self.selected_message {
+            Some(cur) => {
+                if let Some(pos) = indices.iter().position(|&i| i == cur) {
+                    if pos > 0 {
+                        self.selected_message = Some(indices[pos - 1]);
+                    }
+                } else {
+                    self.selected_message = Some(indices[0]);
+                }
+            }
+            None => {
+                self.selected_message = Some(indices[0]);
+            }
+        }
+    }
+
+    pub fn select_first_message(&mut self) {
+        let indices = Self::non_system_indices(&self.conversation.messages);
+        if let Some(&first) = indices.first() {
+            self.selected_message = Some(first);
+        }
+    }
+
+    pub fn select_last_message(&mut self) {
+        self.selected_message = Self::last_non_system_index(&self.conversation.messages);
+    }
+
+    pub fn copy_selected_message(&mut self) {
+        let idx = match self.selected_message {
+            Some(i) => i,
+            None => return,
+        };
+        if let Some(msg) = self.conversation.messages.get(idx) {
             match arboard::Clipboard::new() {
                 Ok(mut clipboard) => {
-                    if clipboard.set_text(&last_ai.content).is_ok() {
+                    if clipboard.set_text(&msg.content).is_ok() {
+                        let role_label = match msg.role {
+                            Role::User => "user",
+                            Role::Assistant => "AI",
+                            Role::System => "system",
+                        };
                         self.status_message =
-                            Some("Copied AI response to clipboard".to_string());
+                            Some(format!("Copied {} message to clipboard", role_label));
                     }
                 }
                 Err(_) => {
@@ -193,6 +262,39 @@ impl App {
                 }
             }
         }
+    }
+
+    pub fn open_selected_in_editor(&mut self) {
+        let idx = match self.selected_message {
+            Some(i) => i,
+            None => return,
+        };
+        let msg = match self.conversation.messages.get(idx) {
+            Some(m) => m,
+            None => return,
+        };
+
+        // Write content to temp file
+        let tmp_path = std::env::temp_dir().join(format!(
+            "aitui_view_{}.md",
+            std::process::id()
+        ));
+        let mut file = match std::fs::File::create(&tmp_path) {
+            Ok(f) => f,
+            Err(e) => {
+                self.status_message = Some(format!("Failed to create temp file: {}", e));
+                return;
+            }
+        };
+        if let Err(e) = file.write_all(msg.content.as_bytes()) {
+            self.status_message = Some(format!("Failed to write temp file: {}", e));
+            return;
+        }
+
+        // Send event to main loop to handle terminal suspend/resume
+        let _ = self
+            .event_tx
+            .send(Event::OpenEditor(tmp_path.to_string_lossy().to_string()));
     }
 
     pub fn insert_char(&mut self, c: char) {

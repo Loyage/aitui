@@ -8,6 +8,7 @@ pub enum Event {
     ApiToken(String),
     ApiDone,
     ApiError(String),
+    OpenEditor(String),
     Tick,
 }
 

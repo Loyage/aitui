@@ -4,6 +4,7 @@ mod config;
 mod event;
 mod history;
 mod input;
+mod keymap;
 mod ui;
 
 use std::io;
@@ -17,10 +18,12 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use app::App;
 use config::Config;
 use event::{Event, EventLoop};
+use keymap::Keymap;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::load()?;
+    let keymap = Keymap::load()?;
 
     // Setup terminal
     enable_raw_mode()?;
@@ -33,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
     let event_tx = event_loop.sender();
     event_loop.start_input_loop();
 
-    let mut app = App::new(config, event_tx);
+    let mut app = App::new(config, keymap, event_tx);
 
     let result = run_app(&mut terminal, &mut app, event_loop).await;
 
@@ -70,6 +73,29 @@ async fn run_app(
                 }
                 Event::ApiError(err) => {
                     app.on_api_error(err);
+                }
+                Event::OpenEditor(path) => {
+                    // Suspend TUI, open editor, resume TUI
+                    disable_raw_mode()?;
+                    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                    terminal.show_cursor()?;
+
+                    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                    let status = std::process::Command::new(&editor)
+                        .arg(&path)
+                        .status();
+
+                    // Resume TUI regardless of editor result
+                    enable_raw_mode()?;
+                    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                    terminal.clear()?;
+
+                    // Clean up temp file
+                    let _ = std::fs::remove_file(&path);
+
+                    if let Err(e) = status {
+                        app.status_message = Some(format!("Failed to open editor: {}", e));
+                    }
                 }
                 Event::Tick => {
                     // Just triggers a redraw
