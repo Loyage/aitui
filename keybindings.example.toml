@@ -1,0 +1,49 @@
+# AiTUI Keybindings Configuration
+# Copy this file to ~/.config/aitui/keybindings.toml and customize.
+# Only include the bindings you want to override; defaults are used for the rest.
+#
+# Key format:
+#   Single character:  "j", "q", "G"
+#   Modifier keys:     "Ctrl+c", "Ctrl+w", "Alt+x"
+#   Function keys:     "F1" ~ "F12"
+#   Special keys:      "Enter", "Esc", "Tab", "Backspace", "Delete",
+#                      "Up", "Down", "Left", "Right", "Home", "End", "Space"
+#
+# A single key:        quit = "q"
+# Multiple keys:       scroll_down = ["j", "Down"]
+
+[normal]
+# quit = "q"
+# enter_insert = "i"
+# enter_insert_after = "a"
+# enter_insert_end = "A"
+# enter_insert_start = "I"
+# enter_visual = "v"
+# scroll_down = ["j", "Down"]
+# scroll_up = ["k", "Up"]
+# scroll_to_top = "g"
+# scroll_to_bottom = "G"
+# copy_response = "y"
+# new_conversation = "n"
+# search = "/"
+# switch_provider = "Tab"
+# open_in_editor = "Enter"
+# toggle_help = "F1"
+
+[insert]
+# send_message = "Enter"
+# back_to_normal = "Esc"
+# delete_char_before = "Backspace"
+# delete_char_at = "Delete"
+# cursor_left = "Left"
+# cursor_right = "Right"
+# cursor_home = ["Home", "Ctrl+a"]
+# cursor_end = ["End", "Ctrl+e"]
+# clear_input = "Ctrl+u"
+# delete_word = "Ctrl+w"
+
+[visual]
+# back_to_normal = "Esc"
+# copy_response = "y"
+# scroll_down = ["j", "Down"]
+# scroll_up = ["k", "Up"]
