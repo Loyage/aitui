@@ -18,10 +18,13 @@
         rustToolchain = pkgs.rust-bin.stable.latest.default;
       in {
         devShells.default = pkgs.mkShell {
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+          ];
           buildInputs = with pkgs; [
             rustToolchain
-            pkg-config
-            openssl
+            xclip
+            xsel
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.darwin.apple_sdk.frameworks.AppKit
             pkgs.darwin.apple_sdk.frameworks.Security

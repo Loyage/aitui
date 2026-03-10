@@ -19,6 +19,8 @@ pub enum Action {
     ScrollToBottom,
     CopyResponse,
     NewConversation,
+    NextConversation,
+    PrevConversation,
     Search,
     SwitchProvider,
     ToggleHelp,
@@ -151,6 +153,8 @@ impl Keymap {
         normal.insert(Self::key("g"), Action::ScrollToTop);
         normal.insert(Self::key("y"), Action::CopyResponse);
         normal.insert(Self::key("n"), Action::NewConversation);
+        normal.insert(Self::key("Ctrl+j"), Action::NextConversation);
+        normal.insert(Self::key("Ctrl+k"), Action::PrevConversation);
         normal.insert(Self::key("/"), Action::Search);
         normal.insert(Self::key("Tab"), Action::SwitchProvider);
         normal.insert(Self::key("Enter"), Action::OpenInEditor);
@@ -253,6 +257,8 @@ impl Keymap {
                 "scroll_to_bottom" => Action::ScrollToBottom,
                 "copy_response" => Action::CopyResponse,
                 "new_conversation" => Action::NewConversation,
+                "next_conversation" => Action::NextConversation,
+                "prev_conversation" => Action::PrevConversation,
                 "search" => Action::Search,
                 "switch_provider" => Action::SwitchProvider,
                 "toggle_help" => Action::ToggleHelp,

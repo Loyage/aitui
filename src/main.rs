@@ -104,8 +104,8 @@ async fn run_app(
         }
 
         if app.should_quit {
-            // Save conversation before quitting
-            let _ = history::save_conversation(&app.conversation);
+            // Save current conversation before quitting
+            let _ = history::save_conversation(app.conversation());
             break;
         }
     }

@@ -1,26 +1,17 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, SetupStep};
 use crate::keymap::Action;
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
-    // Clear status message on any key press
-    app.status_message = None;
+    // Clear status message on any key press, but keep it in setup mode until next step
+    if app.mode != Mode::Setup {
+        app.status_message = None;
+    }
 
     // Ctrl+C always quits (hardcoded, not rebindable)
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         app.should_quit = true;
-        return;
-    }
-
-    // Check for ToggleHelp across all modes via keymap
-    if let Some(&Action::ToggleHelp) = app.keymap.normal.get(&key) {
-        app.show_help = !app.show_help;
-        if app.show_help {
-            app.help_scroll = 0;
-            app.help_searching = false;
-            app.help_search_query.clear();
-        }
         return;
     }
 
@@ -34,6 +25,108 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         Mode::Normal => handle_normal(app, key),
         Mode::Insert => handle_insert(app, key),
         Mode::Visual => handle_visual(app, key),
+        Mode::Setup => handle_setup(app, key),
+    }
+}
+
+fn handle_setup(app: &mut App, key: KeyEvent) {
+    if app.setup_step == SetupStep::Testing {
+        // While testing, only allow quitting with Ctrl+C (already handled)
+        return;
+    }
+
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down if app.setup_step == SetupStep::Name => {
+            app.setup_provider_index = (app.setup_provider_index + 1) % crate::config::PRESET_PROVIDERS.len();
+        }
+        KeyCode::Char('k') | KeyCode::Up if app.setup_step == SetupStep::Name => {
+            if app.setup_provider_index > 0 {
+                app.setup_provider_index -= 1;
+            } else {
+                app.setup_provider_index = crate::config::PRESET_PROVIDERS.len() - 1;
+            }
+        }
+        KeyCode::Enter => {
+            let value = app.input.trim().to_string();
+            match app.setup_step {
+                SetupStep::Name => {
+                    let (name, base_url, model) = crate::config::PRESET_PROVIDERS[app.setup_provider_index];
+                    app.setup_provider.name = name.to_string();
+                    app.setup_provider.base_url = base_url.to_string();
+                    app.setup_provider.model = model.to_string();
+                    
+                    app.setup_step = SetupStep::ApiKey;
+                    app.input.clear();
+                    app.cursor_pos = 0;
+                    app.status_message = None;
+                }
+                SetupStep::ApiKey => {
+                    if value.is_empty() {
+                        app.status_message = Some("API Key cannot be empty".to_string());
+                        return;
+                    }
+                    app.setup_provider.api_key = value;
+                    app.setup_step = SetupStep::BaseUrl;
+                    app.input.clear();
+                    app.cursor_pos = 0;
+                    app.status_message = None;
+                }
+                SetupStep::BaseUrl => {
+                    if value.is_empty() {
+                        app.status_message = Some("Base URL cannot be empty".to_string());
+                        return;
+                    }
+                    app.setup_provider.base_url = value;
+                    app.setup_step = SetupStep::Model;
+                    app.input.clear();
+                    app.cursor_pos = 0;
+                    app.status_message = None;
+                }
+                SetupStep::Model => {
+                    if value.is_empty() {
+                        app.status_message = Some("Model name cannot be empty".to_string());
+                        return;
+                    }
+                    app.setup_provider.model = value;
+                    app.setup_step = SetupStep::Testing;
+                    app.input.clear();
+                    app.cursor_pos = 0;
+                    app.status_message = Some("Testing connection...".to_string());
+                    crate::api::test_connection(&app.setup_provider, app.event_tx.clone());
+                }
+                SetupStep::Testing => {}
+            }
+        }
+        KeyCode::Esc => {
+            match app.setup_step {
+                SetupStep::Name => app.should_quit = true,
+                SetupStep::ApiKey => {
+                    app.setup_step = SetupStep::Name;
+                    app.input = app.setup_provider.name.clone();
+                    app.cursor_pos = app.input.len();
+                }
+                SetupStep::BaseUrl => {
+                    app.setup_step = SetupStep::ApiKey;
+                    app.input = app.setup_provider.api_key.clone();
+                    app.cursor_pos = app.input.len();
+                }
+                SetupStep::Model => {
+                    app.setup_step = SetupStep::BaseUrl;
+                    app.input = app.setup_provider.base_url.clone();
+                    app.cursor_pos = app.input.len();
+                }
+                SetupStep::Testing => {}
+            }
+        }
+        KeyCode::Backspace => {
+            app.delete_char_before_cursor();
+        }
+        KeyCode::Char(c) => {
+            if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                app.insert_char(c);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -89,6 +182,8 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
             Action::CopyResponse => app.copy_selected_message(),
             Action::OpenInEditor => app.open_selected_in_editor(),
             Action::NewConversation => app.new_conversation(),
+            Action::NextConversation => app.select_next_conversation(),
+            Action::PrevConversation => app.select_prev_conversation(),
             Action::Search => {
                 app.searching = true;
                 app.search_query.clear();

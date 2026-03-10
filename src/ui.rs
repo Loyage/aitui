@@ -2,32 +2,80 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, SetupStep};
 use crate::history::Role;
 use crate::keymap::Action;
 
 pub fn draw(f: &mut Frame, app: &App) {
-    let chunks = Layout::default()
+    if app.mode == Mode::Setup {
+        draw_setup(f, app);
+        return;
+    }
+
+    let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(3),    // Chat area
+            Constraint::Min(3),    // Main area (Sidebar + Chat)
             Constraint::Length(3), // Input area
             Constraint::Length(1), // Status bar
         ])
         .split(f.area());
 
-    draw_chat(f, app, chunks[0]);
-    draw_input(f, app, chunks[1]);
-    draw_status_bar(f, app, chunks[2]);
+    let content_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(20), // Sidebar
+            Constraint::Percentage(80), // Chat
+        ])
+        .split(main_chunks[0]);
+
+    draw_sidebar(f, app, content_chunks[0]);
+    draw_chat(f, app, content_chunks[1]);
+    draw_input(f, app, main_chunks[1]);
+    draw_status_bar(f, app, main_chunks[2]);
 
     if app.show_help {
         draw_help(f, app);
     }
+}
+
+fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app
+        .conversations
+        .iter()
+        .enumerate()
+        .map(|(i, conv)| {
+            let title = if conv.title.is_empty() {
+                "New Chat".to_string()
+            } else {
+                conv.title.clone()
+            };
+            let content = Line::from(vec![
+                Span::styled(format!(" {:2} ", i + 1), Style::default().fg(Color::DarkGray)),
+                Span::raw(title),
+            ]);
+            ListItem::new(content)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(" Chats "))
+        .highlight_style(
+            Style::default()
+                .bg(Color::Rgb(60, 60, 60))
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ratatui::widgets::ListState::default();
+    state.select(Some(app.active_conv_index));
+
+    f.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
@@ -39,7 +87,9 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    if app.conversation.messages.is_empty() {
+    let conversation = app.conversation();
+
+    if conversation.messages.is_empty() {
         let welcome = Paragraph::new(Line::from(vec![Span::styled(
             "Press 'i' to start typing, Enter to send. 'q' to quit.",
             Style::default().fg(Color::DarkGray),
@@ -53,7 +103,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     // Track (message_index, start_line, end_line) for each non-System message
     let mut msg_ranges: Vec<(usize, usize, usize)> = Vec::new();
 
-    for (msg_idx, msg) in app.conversation.messages.iter().enumerate() {
+    for (msg_idx, msg) in conversation.messages.iter().enumerate() {
         match msg.role {
             Role::User => {
                 let start = lines.len();
@@ -186,12 +236,14 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
         Mode::Insert => "[INSERT]",
         Mode::Normal => "[NORMAL]",
         Mode::Visual => "[VISUAL]",
+        Mode::Setup => "[SETUP]",
     };
 
     let mode_color = match app.mode {
         Mode::Insert => Color::Green,
         Mode::Normal => Color::Blue,
         Mode::Visual => Color::Magenta,
+        Mode::Setup => Color::Cyan,
     };
 
     let block = Block::default().borders(Borders::ALL);
@@ -244,7 +296,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     } else if app.streaming {
         Span::styled("Receiving response...", Style::default().fg(Color::Cyan))
     } else {
-        let msg_count = app.conversation.messages.len();
+        let msg_count = app.conversation().messages.len();
         let km = &app.keymap;
         let quit_keys = km.keys_for_action("normal", Action::Quit).join("/");
         let insert_keys = km.keys_for_action("normal", Action::EnterInsert).join("/");
@@ -255,6 +307,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         } else {
             String::new()
         };
+        let conv_next = km.keys_for_action("normal", Action::NextConversation).join("/");
+        let conv_prev = km.keys_for_action("normal", Action::PrevConversation).join("/");
         let copy_keys = km.keys_for_action("normal", Action::CopyResponse).join("/");
         let editor_keys = km.keys_for_action("normal", Action::OpenInEditor).join("/");
         let new_keys = km.keys_for_action("normal", Action::NewConversation).join("/");
@@ -263,8 +317,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         let help_keys = km.keys_for_action("normal", Action::ToggleHelp).join("/");
         Span::styled(
             format!(
-                " {} messages | {}:quit {}:insert {} {}:copy {}:view {}:new {}:switch {}:search {}:help",
-                msg_count, quit_keys, insert_keys, nav_str, copy_keys, editor_keys, new_keys, switch_keys, search_keys, help_keys
+                " {} msgs | {}:quit {}:ins {} {}/{}:conv {}:copy {}:view {}:new {}:switch {}:search {}:help",
+                msg_count, quit_keys, insert_keys, nav_str, conv_prev, conv_next, copy_keys, editor_keys, new_keys, switch_keys, search_keys, help_keys
             ),
             Style::default().fg(Color::DarkGray),
         )
@@ -299,6 +353,147 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
         lines.push(String::new());
     }
     lines
+}
+
+fn draw_setup(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" AiTUI - Initial Setup ")
+        .title_alignment(ratatui::layout::Alignment::Center);
+
+    let vertical_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Top padding
+            Constraint::Length(3), // Info box
+            Constraint::Length(1), // Spacer
+            Constraint::Min(10),   // Input fields
+        ])
+        .split(area);
+
+    f.render_widget(block, area);
+
+    let info = Paragraph::new(Line::from(vec![
+        Span::raw("Welcome! "),
+        Span::styled("AiTUI", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw(" needs a provider configuration to start. Follow the steps below."),
+    ]))
+    .alignment(ratatui::layout::Alignment::Center);
+    f.render_widget(info, vertical_chunks[1]);
+
+    let input_area = vertical_chunks[3];
+    let input_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(20), // Left padding
+            Constraint::Percentage(60), // Content
+            Constraint::Percentage(20), // Right padding
+        ])
+        .split(input_area);
+
+    let inner_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            if app.setup_step == SetupStep::Name {
+                Constraint::Length(8) // More space for the list
+            } else {
+                Constraint::Length(3) // Normal input field height
+            },
+            Constraint::Length(1), // Hint
+            Constraint::Min(3),    // Status/Error
+        ])
+        .split(input_chunks[1]);
+
+    let (label, value, hint) = match app.setup_step {
+        SetupStep::Name => (
+            "1. Select API Provider",
+            &crate::config::PRESET_PROVIDERS[app.setup_provider_index].0.to_string(),
+            "Use j/k or Arrow Keys to select, Enter to confirm",
+        ),
+        SetupStep::ApiKey => (
+            "2. API Key",
+            &app.setup_provider.api_key,
+            "Your secret API key from the provider",
+        ),
+        SetupStep::BaseUrl => (
+            "3. Base URL",
+            &app.setup_provider.base_url,
+            "The API endpoint URL, e.g., 'https://api.deepseek.com'",
+        ),
+        SetupStep::Model => (
+            "4. Model Name",
+            &app.setup_provider.model,
+            "The model to use, e.g., 'deepseek-chat' or 'gpt-4o'",
+        ),
+        SetupStep::Testing => (
+            "Testing Connection...",
+            &"Please wait...".to_string(),
+            "Sending a test request to verify your API key...",
+        ),
+    };
+
+    let field_block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", label));
+
+    let display_value = if app.setup_step == SetupStep::Name {
+        let mut lines = Vec::new();
+        for (i, (name, _, _)) in crate::config::PRESET_PROVIDERS.iter().enumerate() {
+            if i == app.setup_provider_index {
+                lines.push(Line::from(vec![
+                    Span::styled(" > ", Style::default().fg(Color::Yellow)),
+                    Span::styled(name.to_string(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::raw("   "),
+                    Span::raw(name.to_string()),
+                ]));
+            }
+        }
+        let para = Paragraph::new(lines);
+        f.render_widget(para.block(field_block.clone()), inner_chunks[0]);
+        String::new() // Don't use display_value logic for Name step
+    } else if app.setup_step == SetupStep::ApiKey && !value.is_empty() {
+        "*".repeat(value.len())
+    } else {
+        value.clone()
+    };
+
+    if app.setup_step != SetupStep::Name {
+        let input_para = Paragraph::new(Line::from(vec![
+            Span::raw("> "),
+            Span::styled(display_value, Style::default().fg(Color::Yellow)),
+        ]))
+        .block(field_block);
+        f.render_widget(input_para, inner_chunks[0]);
+    }
+
+    let hint_para = Paragraph::new(Line::from(vec![
+        Span::styled(hint, Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+    ]));
+    f.render_widget(hint_para, inner_chunks[1]);
+
+    if let Some(ref msg) = app.status_message {
+        let status_color = if msg.to_lowercase().contains("error") || msg.to_lowercase().contains("failed") {
+            Color::Red
+        } else {
+            Color::Green
+        };
+        let status_para = Paragraph::new(Line::from(vec![
+            Span::styled(msg, Style::default().fg(status_color)),
+        ]))
+        .wrap(Wrap { trim: false });
+        f.render_widget(status_para, inner_chunks[2]);
+    }
+
+    // Set cursor position in setup mode
+    if app.setup_step != SetupStep::Testing && app.setup_step != SetupStep::Name {
+        let cursor_x = inner_chunks[0].x + 3 + app.input.width() as u16;
+        let cursor_y = inner_chunks[0].y + 1;
+        f.set_cursor_position((cursor_x, cursor_y));
+    }
 }
 
 fn draw_help(f: &mut Frame, app: &App) {
@@ -337,6 +532,8 @@ fn draw_help(f: &mut Frame, app: &App) {
         Line::from(vec![Span::styled(pad(format!("  {}", fmt("normal", Action::EnterInsertStart)), kw), key_style), Span::raw("Insert at start")]),
         Line::from(vec![Span::styled(pad(format!("  {}", fmt("normal", Action::ScrollDown)), kw), key_style), Span::raw("Select next message")]),
         Line::from(vec![Span::styled(pad(format!("  {}", fmt("normal", Action::ScrollUp)), kw), key_style), Span::raw("Select previous message")]),
+        Line::from(vec![Span::styled(pad(format!("  {}", fmt("normal", Action::NextConversation)), kw), key_style), Span::raw("Next conversation")]),
+        Line::from(vec![Span::styled(pad(format!("  {}", fmt("normal", Action::PrevConversation)), kw), key_style), Span::raw("Previous conversation")]),
         Line::from(vec![Span::styled(pad(format!("  {}", fmt("normal", Action::ScrollToBottom)), kw), key_style), Span::raw("Select last message")]),
         Line::from(vec![Span::styled(pad(format!("  {}", fmt("normal", Action::ScrollToTop)), kw), key_style), Span::raw("Select first message")]),
         Line::from(vec![Span::styled(pad(format!("  {}", fmt("normal", Action::CopyResponse)), kw), key_style), Span::raw("Copy selected message")]),

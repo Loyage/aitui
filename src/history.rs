@@ -18,7 +18,7 @@ pub enum Role {
     System,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
     pub id: String,
     pub title: String,
@@ -62,31 +62,27 @@ pub fn save_conversation(conv: &Conversation) -> anyhow::Result<()> {
 }
 
 pub fn load_latest_conversation() -> Option<Conversation> {
+    load_all_conversations().ok()?.first().cloned()
+}
+
+pub fn load_all_conversations() -> anyhow::Result<Vec<Conversation>> {
     let dir = data_dir();
     if !dir.exists() {
-        return None;
+        return Ok(Vec::new());
     }
 
-    let mut entries: Vec<_> = fs::read_dir(&dir)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map_or(false, |ext| ext == "json")
-        })
-        .collect();
-
-    entries.sort_by(|a, b| {
-        let time_a = a.metadata().and_then(|m| m.modified()).ok();
-        let time_b = b.metadata().and_then(|m| m.modified()).ok();
-        time_b.cmp(&time_a)
-    });
-
-    if let Some(entry) = entries.first() {
-        let content = fs::read_to_string(entry.path()).ok()?;
-        serde_json::from_str(&content).ok()
-    } else {
-        None
+    let mut conversations = Vec::new();
+    for entry in fs::read_dir(&dir)? {
+        let entry = entry?;
+        if entry.path().extension().map_or(false, |ext| ext == "json") {
+            if let Ok(content) = fs::read_to_string(entry.path()) {
+                if let Ok(conv) = serde_json::from_str::<Conversation>(&content) {
+                    conversations.push(conv);
+                }
+            }
+        }
     }
+
+    conversations.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(conversations)
 }

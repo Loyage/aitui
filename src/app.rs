@@ -16,13 +16,24 @@ pub enum Mode {
     Normal,
     Insert,
     Visual,
+    Setup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SetupStep {
+    Name,
+    ApiKey,
+    BaseUrl,
+    Model,
+    Testing,
 }
 
 pub struct App {
     pub mode: Mode,
     pub input: String,
     pub cursor_pos: usize,
-    pub conversation: Conversation,
+    pub conversations: Vec<Conversation>,
+    pub active_conv_index: usize,
     pub selected_message: Option<usize>,
     pub streaming: bool,
     pub config: Config,
@@ -38,19 +49,44 @@ pub struct App {
     pub help_scroll: usize,
     pub help_searching: bool,
     pub help_search_query: String,
+
+    // Setup mode state
+    pub setup_step: SetupStep,
+    pub setup_provider: crate::config::ProviderConfig,
+    pub setup_provider_index: usize,
+
+    pub clipboard: Option<arboard::Clipboard>,
 }
 
 impl App {
     pub fn new(config: Config, keymap: Keymap, event_tx: mpsc::UnboundedSender<Event>) -> Self {
-        let conversation =
-            crate::history::load_latest_conversation().unwrap_or_else(Conversation::new);
+        let mut conversations =
+            crate::history::load_all_conversations().unwrap_or_default();
+        if conversations.is_empty() {
+            conversations.push(Conversation::new());
+        }
+
+        let selected_message = if !conversations.is_empty() {
+             Self::last_non_system_index(&conversations[0].messages)
+        } else {
+            None
+        };
+
+        let mode = if config.providers.is_empty() {
+            Mode::Setup
+        } else {
+            Mode::Normal
+        };
+
+        let clipboard = arboard::Clipboard::new().ok();
 
         Self {
-            mode: Mode::Normal,
+            mode,
             input: String::new(),
             cursor_pos: 0,
-            selected_message: Self::last_non_system_index(&conversation.messages),
-            conversation,
+            selected_message,
+            conversations,
+            active_conv_index: 0,
             streaming: false,
             config,
             keymap,
@@ -65,11 +101,34 @@ impl App {
             help_scroll: 0,
             help_searching: false,
             help_search_query: String::new(),
+            setup_step: SetupStep::Name,
+            setup_provider: crate::config::ProviderConfig::empty(),
+            setup_provider_index: 0,
+            clipboard,
         }
     }
 
+    pub fn conversation(&self) -> &Conversation {
+        &self.conversations[self.active_conv_index]
+    }
+
+    pub fn conversation_mut(&mut self) -> &mut Conversation {
+        &mut self.conversations[self.active_conv_index]
+    }
+
     pub fn provider(&self) -> &crate::config::ProviderConfig {
-        &self.config.providers[self.current_provider]
+        if self.config.providers.is_empty() {
+             &self.setup_provider
+        } else {
+             &self.config.providers[self.current_provider]
+        }
+    }
+
+    pub fn complete_setup(&mut self) {
+        self.config.providers.push(self.setup_provider.clone());
+        let _ = self.config.save();
+        self.mode = Mode::Normal;
+        self.status_message = Some("Configuration saved!".to_string());
     }
 
     pub fn switch_provider(&mut self) {
@@ -83,10 +142,26 @@ impl App {
 
     pub fn new_conversation(&mut self) {
         // Save current before starting new
-        let _ = save_conversation(&self.conversation);
-        self.conversation = Conversation::new();
+        let _ = save_conversation(self.conversation());
+        let new_conv = Conversation::new();
+        self.conversations.insert(0, new_conv);
+        self.active_conv_index = 0;
         self.selected_message = None;
         self.status_message = Some("New conversation started".to_string());
+    }
+
+    pub fn select_next_conversation(&mut self) {
+        if self.active_conv_index + 1 < self.conversations.len() {
+            self.active_conv_index += 1;
+            self.selected_message = Self::last_non_system_index(&self.conversation().messages);
+        }
+    }
+
+    pub fn select_prev_conversation(&mut self) {
+        if self.active_conv_index > 0 {
+            self.active_conv_index -= 1;
+            self.selected_message = Self::last_non_system_index(&self.conversation().messages);
+        }
     }
 
     pub fn send_message(&mut self) {
@@ -100,7 +175,7 @@ impl App {
             content,
             timestamp: Utc::now(),
         };
-        self.conversation.messages.push(user_msg);
+        self.conversation_mut().messages.push(user_msg);
         self.input.clear();
         self.cursor_pos = 0;
 
@@ -113,20 +188,20 @@ impl App {
             content: String::new(),
             timestamp: Utc::now(),
         };
-        self.conversation.messages.push(ai_msg);
+        self.conversation_mut().messages.push(ai_msg);
 
         // Select latest message
-        self.selected_message = Self::last_non_system_index(&self.conversation.messages);
+        self.selected_message = Self::last_non_system_index(&self.conversation().messages);
 
         api::send_chat_request(
             self.provider(),
-            &self.conversation.messages[..self.conversation.messages.len() - 1],
+            &self.conversation().messages[..self.conversation().messages.len() - 1],
             self.event_tx.clone(),
         );
     }
 
     pub fn on_api_token(&mut self, token: String) {
-        if let Some(last) = self.conversation.messages.last_mut() {
+        if let Some(last) = self.conversation_mut().messages.last_mut() {
             if last.role == Role::Assistant {
                 last.content.push_str(&token);
             }
@@ -134,19 +209,24 @@ impl App {
     }
 
     pub fn on_api_done(&mut self) {
+        if self.mode == Mode::Setup {
+            self.complete_setup();
+            return;
+        }
+
         self.streaming = false;
-        self.conversation.updated_at = Utc::now();
-        self.selected_message = Self::last_non_system_index(&self.conversation.messages);
+        self.conversation_mut().updated_at = Utc::now();
+        self.selected_message = Self::last_non_system_index(&self.conversation().messages);
 
         // Auto-set title from first user message
-        if self.conversation.title == "New Chat" {
+        if self.conversation().title == "New Chat" {
             if let Some(first_user) = self
-                .conversation
+                .conversation()
                 .messages
                 .iter()
                 .find(|m| m.role == Role::User)
             {
-                self.conversation.title = first_user
+                self.conversation_mut().title = first_user
                     .content
                     .chars()
                     .take(30)
@@ -154,17 +234,25 @@ impl App {
             }
         }
 
-        let _ = save_conversation(&self.conversation);
+        let _ = save_conversation(self.conversation());
     }
 
     pub fn on_api_error(&mut self, err: String) {
+        if self.mode == Mode::Setup {
+            self.status_message = Some(format!("Test Failed: {}", err));
+            self.setup_step = SetupStep::Model; // Back to model selection to allow retry
+            self.input = self.setup_provider.model.clone();
+            self.cursor_pos = self.input.len();
+            return;
+        }
+
         self.streaming = false;
         self.status_message = Some(format!("API Error: {}", err));
 
         // Remove empty AI message if it exists
-        if let Some(last) = self.conversation.messages.last() {
+        if let Some(last) = self.conversation().messages.last() {
             if last.role == Role::Assistant && last.content.is_empty() {
-                self.conversation.messages.pop();
+                self.conversation_mut().messages.pop();
             }
         }
     }
@@ -186,7 +274,7 @@ impl App {
     }
 
     pub fn select_next_message(&mut self) {
-        let indices = Self::non_system_indices(&self.conversation.messages);
+        let indices = Self::non_system_indices(&self.conversation().messages);
         if indices.is_empty() {
             return;
         }
@@ -207,7 +295,7 @@ impl App {
     }
 
     pub fn select_prev_message(&mut self) {
-        let indices = Self::non_system_indices(&self.conversation.messages);
+        let indices = Self::non_system_indices(&self.conversation().messages);
         if indices.is_empty() {
             return;
         }
@@ -228,39 +316,48 @@ impl App {
     }
 
     pub fn select_first_message(&mut self) {
-        let indices = Self::non_system_indices(&self.conversation.messages);
+        let indices = Self::non_system_indices(&self.conversation().messages);
         if let Some(&first) = indices.first() {
             self.selected_message = Some(first);
         }
     }
 
     pub fn select_last_message(&mut self) {
-        self.selected_message = Self::last_non_system_index(&self.conversation.messages);
+        self.selected_message = Self::last_non_system_index(&self.conversation().messages);
     }
 
     pub fn copy_selected_message(&mut self) {
         let idx = match self.selected_message {
             Some(i) => i,
-            None => return,
+            None => {
+                self.status_message = Some("No message selected to copy".to_string());
+                return;
+            }
         };
-        if let Some(msg) = self.conversation.messages.get(idx) {
-            match arboard::Clipboard::new() {
-                Ok(mut clipboard) => {
-                    if clipboard.set_text(&msg.content).is_ok() {
-                        let role_label = match msg.role {
-                            Role::User => "user",
-                            Role::Assistant => "AI",
-                            Role::System => "system",
-                        };
-                        self.status_message =
-                            Some(format!("Copied {} message to clipboard", role_label));
-                    }
-                }
-                Err(_) => {
+        let (content, role) = if let Some(msg) = self.conversation().messages.get(idx) {
+            (msg.content.clone(), msg.role.clone())
+        } else {
+            return;
+        };
+
+        if let Some(ref mut clipboard) = self.clipboard {
+            match clipboard.set_text(&content) {
+                Ok(_) => {
+                    let role_label = match role {
+                        Role::User => "user",
+                        Role::Assistant => "AI",
+                        Role::System => "system",
+                    };
                     self.status_message =
-                        Some("Failed to access clipboard".to_string());
+                        Some(format!("Copied {} message to clipboard", role_label));
+                }
+                Err(e) => {
+                    self.status_message = Some(format!("Clipboard Error: {}", e));
                 }
             }
+        } else {
+            self.status_message =
+                Some("Clipboard not initialized (check dependencies like xclip/xsel)".to_string());
         }
     }
 
@@ -269,7 +366,7 @@ impl App {
             Some(i) => i,
             None => return,
         };
-        let msg = match self.conversation.messages.get(idx) {
+        let msg = match self.conversation().messages.get(idx) {
             Some(m) => m,
             None => return,
         };

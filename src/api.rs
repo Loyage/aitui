@@ -37,6 +37,81 @@ struct ChunkDelta {
     content: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ChatResponse {
+    #[allow(dead_code)]
+    choices: Vec<Choice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Choice {
+    #[allow(dead_code)]
+    message: ApiMessage,
+}
+
+pub fn test_connection(
+    config: &ProviderConfig,
+    event_tx: mpsc::UnboundedSender<Event>,
+) {
+    let request_body = ChatRequest {
+        model: config.model.clone(),
+        messages: vec![ApiMessage {
+            role: "user".to_string(),
+            content: "say hi".to_string(),
+        }],
+        stream: false,
+        max_tokens: Some(5),
+        temperature: 0.1,
+    };
+
+    let url = format!(
+        "{}/v1/chat/completions",
+        config.base_url.trim_end_matches('/')
+    );
+
+    let mut builder = reqwest::Client::builder();
+    if let Some(ref proxy) = config.proxy {
+        if let Ok(p) = reqwest::Proxy::all(proxy) {
+            builder = builder.proxy(p);
+        }
+    }
+
+    let api_key = config.api_key.clone();
+
+    tokio::spawn(async move {
+        let client = match builder.build() {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = event_tx.send(Event::ApiError(format!("Client error: {}", e)));
+                return;
+            }
+        };
+
+        let response = match client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .json(&request_body)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = event_tx.send(Event::ApiError(format!("Network error: {}", e)));
+                return;
+            }
+        };
+
+        if response.status().is_success() {
+            let _ = event_tx.send(Event::ApiDone);
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let _ = event_tx.send(Event::ApiError(format!("API Error {}: {}", status, body)));
+        }
+    });
+}
+
 pub fn send_chat_request(
     config: &ProviderConfig,
     messages: &[ChatMessage],
@@ -156,7 +231,7 @@ pub fn send_chat_request(
                         Ok(chunk) => {
                             if let Some(choice) = chunk.choices.first() {
                                 if let Some(ref content) = choice.delta.content {
-                                    let _ = event_tx.send(Event::ApiToken(content.clone()));
+                                    let _ = event_tx.send(Event::ApiToken(content.to_string()));
                                 }
                             }
                         }
