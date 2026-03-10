@@ -15,6 +15,24 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Sequential key combinations (e.g., Space + e)
+    if app.mode != Mode::Insert && app.mode != Mode::Setup {
+        if let Some(prev) = app.last_key {
+            if prev.code == KeyCode::Char(' ') && key.code == KeyCode::Char('e') {
+                app.sidebar_expanded = !app.sidebar_expanded;
+                app.mode = if app.sidebar_expanded { Mode::Select } else { Mode::Browse };
+                app.last_key = None;
+                return;
+            }
+        }
+        if key.code == KeyCode::Char(' ') {
+            app.last_key = Some(key);
+            return;
+        } else {
+            app.last_key = None;
+        }
+    }
+
     // When help is shown, handle help-specific keys
     if app.show_help {
         handle_help(app, key);
@@ -22,10 +40,58 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     }
 
     match app.mode {
+        Mode::Browse => handle_browse(app, key),
         Mode::Normal => handle_normal(app, key),
         Mode::Insert => handle_insert(app, key),
+        Mode::Select => handle_select(app, key),
         Mode::Visual => handle_visual(app, key),
         Mode::Setup => handle_setup(app, key),
+    }
+}
+
+fn handle_select(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.select_next_conversation();
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.select_prev_conversation();
+        }
+        KeyCode::Enter | KeyCode::Esc => {
+            app.mode = Mode::Browse;
+            app.sidebar_expanded = false;
+        }
+        _ => {}
+    }
+}
+
+fn handle_browse(app: &mut App, key: KeyEvent) {
+    if let Some(&action) = app.keymap.normal.get(&key) {
+        match action {
+            Action::Quit => app.should_quit = true,
+            Action::EnterInsert => {
+                app.mode = Mode::Insert;
+                app.move_cursor_to_end();
+            }
+            Action::ScrollDown => app.select_next_message(),
+            Action::ScrollUp => app.select_prev_message(),
+            Action::ScrollToBottom => app.select_last_message(),
+            Action::ScrollToTop => app.select_first_message(),
+            Action::CopyResponse => app.copy_selected_message(),
+            Action::OpenInEditor => app.open_selected_in_editor(),
+            Action::NewConversation => app.new_conversation(),
+            Action::SwitchProvider => app.switch_provider(),
+            Action::ToggleHelp => { /* handled in handle_key */ }
+            _ => {}
+        }
+    } else {
+        match key.code {
+            KeyCode::Enter => app.mode = Mode::Normal,
+            KeyCode::Char('i') => app.mode = Mode::Insert,
+            KeyCode::Char('j') | KeyCode::Down => app.select_next_message(),
+            KeyCode::Char('k') | KeyCode::Up => app.select_prev_message(),
+            _ => {}
+        }
     }
 }
 
@@ -176,9 +242,15 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
                 app.visual_start = Some(app.cursor_pos);
             }
             Action::ScrollDown => app.select_next_message(),
-            Action::ScrollUp => app.select_prev_message(),
+            Action::ScrollUp => {
+                app.mode = Mode::Browse;
+                app.select_prev_message();
+            }
             Action::ScrollToBottom => app.select_last_message(),
-            Action::ScrollToTop => app.select_first_message(),
+            Action::ScrollToTop => {
+                app.mode = Mode::Browse;
+                app.select_first_message();
+            }
             Action::CopyResponse => app.copy_selected_message(),
             Action::OpenInEditor => app.open_selected_in_editor(),
             Action::NewConversation => app.new_conversation(),
@@ -190,6 +262,21 @@ fn handle_normal(app: &mut App, key: KeyEvent) {
             }
             Action::SwitchProvider => app.switch_provider(),
             Action::ToggleHelp => { /* handled above */ }
+            _ => {}
+        }
+    } else {
+        // Direct key checks for mode transitions
+        match key.code {
+            KeyCode::Enter => {
+                app.mode = Mode::Browse;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                app.mode = Mode::Browse;
+                app.select_prev_message();
+            }
+            KeyCode::Char('i') => {
+                app.mode = Mode::Insert;
+            }
             _ => {}
         }
     }

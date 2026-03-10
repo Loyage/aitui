@@ -13,10 +13,12 @@ use crate::keymap::Keymap;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Mode {
-    Normal,
-    Insert,
-    Visual,
-    Setup,
+    Browse, // Focusing on conversation history
+    Normal, // Focusing on input box (Vim normal)
+    Insert, // Focusing on input box (Vim insert)
+    Select, // Focusing on sidebar/conversation list
+    Visual, // Keep for viewing long messages
+    Setup,  // Initial configuration
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -56,6 +58,10 @@ pub struct App {
     pub setup_provider_index: usize,
 
     pub clipboard: Option<arboard::Clipboard>,
+
+    // Sidebar state
+    pub sidebar_expanded: bool,
+    pub last_key: Option<crossterm::event::KeyEvent>,
 }
 
 impl App {
@@ -75,7 +81,7 @@ impl App {
         let mode = if config.providers.is_empty() {
             Mode::Setup
         } else {
-            Mode::Normal
+            Mode::Browse
         };
 
         let clipboard = arboard::Clipboard::new().ok();
@@ -105,6 +111,8 @@ impl App {
             setup_provider: crate::config::ProviderConfig::empty(),
             setup_provider_index: 0,
             clipboard,
+            sidebar_expanded: false,
+            last_key: None,
         }
     }
 

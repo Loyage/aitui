@@ -157,7 +157,7 @@ impl Keymap {
         normal.insert(Self::key("Ctrl+k"), Action::PrevConversation);
         normal.insert(Self::key("/"), Action::Search);
         normal.insert(Self::key("Tab"), Action::SwitchProvider);
-        normal.insert(Self::key("Enter"), Action::OpenInEditor);
+        normal.insert(Self::key("E"), Action::OpenInEditor);
         normal.insert(Self::key("F1"), Action::ToggleHelp);
 
         // Insert mode defaults

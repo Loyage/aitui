@@ -29,8 +29,12 @@ pub fn draw(f: &mut Frame, app: &App) {
     let content_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(20), // Sidebar
-            Constraint::Percentage(80), // Chat
+            if app.sidebar_expanded {
+                Constraint::Percentage(20)
+            } else {
+                Constraint::Length(5)
+            },
+            Constraint::Min(0),
         ])
         .split(main_chunks[0]);
 
@@ -50,27 +54,41 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, conv)| {
-            let title = if conv.title.is_empty() {
-                "New Chat".to_string()
+            let content = if app.sidebar_expanded {
+                let title = if conv.title.is_empty() {
+                    "New Chat".to_string()
+                } else {
+                    conv.title.clone()
+                };
+                Line::from(vec![
+                    Span::styled(format!(" {:2} ", i + 1), Style::default().fg(Color::DarkGray)),
+                    Span::raw(title),
+                ])
             } else {
-                conv.title.clone()
+                Line::from(vec![
+                    Span::styled(format!("{:^3}", i + 1), Style::default().fg(Color::DarkGray)),
+                ])
             };
-            let content = Line::from(vec![
-                Span::styled(format!(" {:2} ", i + 1), Style::default().fg(Color::DarkGray)),
-                Span::raw(title),
-            ]);
             ListItem::new(content)
         })
         .collect();
 
+    let block_style = if app.mode == Mode::Select {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Chats "))
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .title(" Chats ")
+            .border_style(block_style))
         .highlight_style(
             Style::default()
                 .bg(Color::Rgb(60, 60, 60))
                 .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
+        );
 
     let mut state = ratatui::widgets::ListState::default();
     state.select(Some(app.active_conv_index));
@@ -79,8 +97,15 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
+    let block_style = if app.mode == Mode::Browse || app.mode == Mode::Visual {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_style(block_style)
         .title(format!(" AiTUI - {} ({}) ", app.provider().name, app.provider().model))
         .title_alignment(ratatui::layout::Alignment::Center);
 
@@ -232,30 +257,33 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_input(f: &mut Frame, app: &App, area: Rect) {
-    let mode_label = match app.mode {
-        Mode::Insert => "[INSERT]",
-        Mode::Normal => "[NORMAL]",
-        Mode::Visual => "[VISUAL]",
-        Mode::Setup => "[SETUP]",
+    let (mode_label, mode_color) = match app.mode {
+        Mode::Browse => ("BROWSE", Color::Cyan),
+        Mode::Normal => ("NORMAL", Color::Blue),
+        Mode::Insert => ("INSERT", Color::Green),
+        Mode::Select => ("SELECT", Color::Magenta),
+        Mode::Visual => ("VISUAL", Color::Yellow),
+        Mode::Setup => ("SETUP", Color::White),
     };
 
-    let mode_color = match app.mode {
-        Mode::Insert => Color::Green,
-        Mode::Normal => Color::Blue,
-        Mode::Visual => Color::Magenta,
-        Mode::Setup => Color::Cyan,
+    let block_style = if app.mode == Mode::Normal || app.mode == Mode::Insert {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
     };
 
-    let block = Block::default().borders(Borders::ALL);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(block_style);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let input_line = Line::from(vec![
         Span::styled(
             if app.searching {
-                "/"
+                "/".to_string()
             } else {
-                mode_label
+                format!("[{}]", mode_label)
             },
             Style::default()
                 .fg(mode_color)
@@ -280,7 +308,7 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
 
     // Show cursor in insert mode
     if app.mode == Mode::Insert && !app.streaming {
-        let prefix_width = format!("{} > ", mode_label).width() as u16;
+        let prefix_width = format!("[{}] > ", mode_label).width() as u16;
         let cursor_x = inner.x + prefix_width + app.input[..app.cursor_pos].width() as u16;
         let cursor_y = inner.y;
         f.set_cursor_position((cursor_x, cursor_y));
